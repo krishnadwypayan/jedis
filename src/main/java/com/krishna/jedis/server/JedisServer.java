@@ -1,7 +1,6 @@
 package com.krishna.jedis.server;
 
 import com.krishna.jedis.cmd.CommandHandler;
-import com.krishna.jedis.cmd.JedisCmd;
 import com.krishna.jedis.resp.Decoder;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -116,9 +115,8 @@ public class JedisServer {
                     }
 
                     // SUCCESS path
-                    JedisCmd jedisCmd = commandHandler.parse(decodeResult.value());
-                    String response = commandHandler.evaluate(jedisCmd);
-                    state.writeBuf().put(response.getBytes(StandardCharsets.UTF_8));
+                    byte[] response = commandHandler.handle(decodeResult.value());
+                    state.writeBuf().put(response);
                 } catch (Exception e) {
                     LOGGER.error("Error handling client", e);
                     closeClient(selectionKey);

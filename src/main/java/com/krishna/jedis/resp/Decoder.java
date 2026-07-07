@@ -1,20 +1,42 @@
 package com.krishna.jedis.resp;
 
-import java.io.IOException;
+import com.krishna.jedis.utils.ErrorSignal;
+import com.krishna.jedis.utils.IncompleteSignal;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 public class Decoder {
 
-    public DecodeResult decode(ByteBuffer data) throws IOException {
+    private static final Logger LOGGER = LogManager.getLogger(Decoder.class);
+
+    public DecodeResult decode(ByteBuffer data) throws IncompleteSignal {
         if (!data.hasRemaining()) {
-            throw new IOException("no data found");
+            throw IncompleteSignal.INSTANCE;
         }
 
         data.mark();  // mark so that we can reset if required
 
+        try {
+            Object result = decodeOne(data);
+            return new DecodeResult(result, DecodeResult.Status.SUCCESS);
+        } catch (ErrorSignal e) {
+            LOGGER.error("Error parsing data: {}", data, e);
+            return new DecodeResult(null, DecodeResult.Status.ERROR);
+        } catch (IncompleteSignal e) {
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("Unable to parse. Incomplete data received: {}", data, e);
+            }
+            data.reset();
+            return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
+        }
+    }
+
+    private Object decodeOne(ByteBuffer data) throws IncompleteSignal, ErrorSignal {
         byte firstByte = data.get();
-        DecodeResult result = switch (firstByte) {
+        return switch (firstByte) {
             case '+' -> decodeSimpleString(data);
             case '-' -> decodeSimpleError(data);
             case ':' -> decodeInt64(data);
@@ -25,91 +47,60 @@ public class Decoder {
                 yield decodeInline(data);
             }
         };
-
-        return switch (result.status) {
-            case SUCCESS, ERROR -> result;
-            case INCOMPLETE -> {
-                data.reset();
-                yield result;
-            }
-        };
     }
 
-    private DecodeResult decodeInline(ByteBuffer data) {
-        int start = data.position();
-        while (data.hasRemaining() && data.get() != '\r') {
+    private String[] decodeInline(ByteBuffer data) throws IncompleteSignal {
+        ByteBuffer result = readLine(data);
+        if (result == null || !result.hasRemaining()) {
+            return new String[0];
         }
-
-        if (!data.hasRemaining() || data.get() != '\n') {
-            return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
-        }
-
-        int end = data.position()-2;
-        return new DecodeResult(
-                StandardCharsets.UTF_8.decode(data.slice(start, end-start)).toString().split(" "),
-                DecodeResult.Status.SUCCESS);
+        return StandardCharsets.UTF_8.decode(result).toString().trim().split("\\s+");
     }
 
-    private DecodeResult decodeArray(ByteBuffer data) throws IOException {
-        DecodeResult decodeResult = decodeInt64(data);
-        if (decodeResult.status == DecodeResult.Status.INCOMPLETE) {
-            return decodeResult;
-        }
-
-        int len = Math.toIntExact((Long) decodeResult.value);
+    private Object[] decodeArray(ByteBuffer data) throws IncompleteSignal, ErrorSignal {
+        int len = int64ToInt(decodeInt64(data));
         if (len < 0) {
-            return new DecodeResult(null, DecodeResult.Status.SUCCESS);
+            return null;
         }
 
         Object[] arr = new Object[len];
         for (int i = 0; i < len; i++) {
-            if (!data.hasRemaining()) {
-                return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
-            }
-            DecodeResult result = decode(data);
-            if (result.status == DecodeResult.Status.INCOMPLETE) {
-                return result;
-            }
-            arr[i] = result.value;
+            arr[i] = decodeOne(data);
         }
-        return new DecodeResult(arr, DecodeResult.Status.SUCCESS);
+        return arr;
     }
 
-    private DecodeResult decodeBulkString(ByteBuffer data) {
-        DecodeResult decodeResult = decodeInt64(data);
-        if (decodeResult.status == DecodeResult.Status.INCOMPLETE) {
-            return decodeResult;
-        }
-
-        int length = Math.toIntExact((Long) decodeResult.value);
+    private String decodeBulkString(ByteBuffer data) throws IncompleteSignal {
+        int length = int64ToInt(decodeInt64(data));
         if (length < 0) {
-            return new DecodeResult(null, DecodeResult.Status.SUCCESS);
+            return null;
         }
 
         if (data.remaining() >= length + 2) {
             // data is already moved till after 'length\r\n'
             String result = StandardCharsets.UTF_8.decode(data.slice(data.position(), length)).toString();
             data.position(data.position() + length + 2);
-            return new DecodeResult(result, DecodeResult.Status.SUCCESS);
+            return result;
         }
-        return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
+        throw IncompleteSignal.INSTANCE;
     }
 
-    private DecodeResult decodeInt64(ByteBuffer data) {
+    private Long decodeInt64(ByteBuffer data) throws IncompleteSignal, ErrorSignal {
         long value = 0L;
         if (!data.hasRemaining()) {
-            return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
+            throw IncompleteSignal.INSTANCE;
         }
 
         boolean negative = data.get(data.position()) == '-';
-
         if (negative || data.get(data.position()) == '+') {
             data.get();
         }
-
         while (data.hasRemaining()) {
             byte b = data.get();
             if (b != '\r') {
+                if (b < '0' || b > '9') {
+                    throw ErrorSignal.INSTANCE;
+                }
                 value = value * 10L + (b - '0');
             } else {
                 break;
@@ -117,31 +108,46 @@ public class Decoder {
         }
 
         if (!data.hasRemaining()) {
-            return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
+            throw IncompleteSignal.INSTANCE;
         }
 
         data.get(); // consume '\n'
-        return new DecodeResult(negative ? -value : value, DecodeResult.Status.SUCCESS);
+        return negative ? -value : value;
     }
 
-    private DecodeResult decodeSimpleError(ByteBuffer data) {
+    private String decodeSimpleError(ByteBuffer data) {
         return decodeSimpleString(data);
     }
 
-    private DecodeResult decodeSimpleString(ByteBuffer data) {
+    private String decodeSimpleString(ByteBuffer data) throws IncompleteSignal {
+        return StandardCharsets.UTF_8.decode(readLine(data)).toString();
+    }
+
+    /**
+     * Returns the line by consuming
+     *
+     * @param data
+     * @return
+     */
+    private ByteBuffer readLine(ByteBuffer data) throws IncompleteSignal {
         int start = data.position();
         while (data.hasRemaining() && data.get() != '\r') {
         }
 
-        if (!data.hasRemaining() || data.get(data.position()) != '\n') {
-            // incomplete input
-            return new DecodeResult(null, DecodeResult.Status.INCOMPLETE);
+        if (!data.hasRemaining() || data.get() != '\n') {
+            throw IncompleteSignal.INSTANCE;
         }
 
-        int end = data.position() - 1;
-        String value = StandardCharsets.UTF_8.decode(data.slice(start, end - start)).toString();
-        data.get(); // consume '\n'
-        return new DecodeResult(value, DecodeResult.Status.SUCCESS);
+        int end = data.position() - 2;
+        return data.slice(start, end - start);
+    }
+
+    private int int64ToInt(long value) {
+        try {
+            return Math.toIntExact(value);
+        } catch (ArithmeticException e) {
+            throw ErrorSignal.INSTANCE;
+        }
     }
 
     public record DecodeResult(Object value, Status status) {

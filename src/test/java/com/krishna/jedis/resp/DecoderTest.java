@@ -2,7 +2,6 @@ package com.krishna.jedis.resp;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
 
@@ -13,7 +12,7 @@ class DecoderTest {
     private final Decoder decoder = new Decoder();
 
     @Test
-    void decodeInteger() throws IOException {
+    void decodeInteger() {
         Map<String, Long> cases = Map.of(
                 ":-10\r\n", -10L,
                 ":10\r\n", 10L,
@@ -32,7 +31,7 @@ class DecoderTest {
     }
 
     @Test
-    void decodeSimpleString() throws IOException {
+    void decodeSimpleString() {
         Map<String, String> cases = Map.of(
                 "+OK\r\n", "OK",
                 "+\r\n", ""
@@ -44,7 +43,7 @@ class DecoderTest {
     }
 
     @Test
-    void decodeSimpleError() throws IOException {
+    void decodeSimpleError() {
         Map<String, String> cases = Map.of(
                 "-Error message\r\n", "Error message"
         );
@@ -55,7 +54,7 @@ class DecoderTest {
     }
 
     @Test
-    void decodeBulkString() throws IOException {
+    void decodeBulkString() {
         Map<String, String> cases = Map.of(
                 "$5\r\nhello\r\n", "hello",
                 "$0\r\n\r\n", ""
@@ -72,7 +71,7 @@ class DecoderTest {
     }
 
     @Test
-    void decodeArray() throws IOException {
+    void decodeArray() {
         Map<String, Object[]> cases = Map.of(
                 "*0\r\n", new Object[]{},
                 "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n", new String[]{"hello", "world"},
