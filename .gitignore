@@ -41,3 +41,9 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### IDE - IntelliJ (ignore all of .idea)
+.idea/
+
+### Redis/Valkey persistence
+*.rdb
